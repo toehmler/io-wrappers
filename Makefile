@@ -1,16 +1,12 @@
 test: test.c
-	gcc -Wall -g -pedantic -o test test.c newio.c
-
-test-new: test-new.c
-	gcc -Wall -g -pedantic -o test-new test-new.c newio.c
-
+	gcc -Wall -g -pedantic -o test test.c myio.c
 	
 .PHONY: clean out-file
 
 out-file:
-	rm -rf sample-out
-	touch sample-out 
-	sudo chmod 777 sample-out
-
+	rm -rf out-file5
+	touch out-file5
+	chmod 777 out-file5
+	
 clean:
 	rm -rf test
