@@ -41,7 +41,7 @@ main(int argc, char *argv[])
         exit(1);
     }
 
-    out = myopen(out_filename, O_WRONLY);
+    out = myopen(out_filename, O_WRONLY | O_CREAT);
     if (out == NULL) 
 	 {
         perror("myopen");
