@@ -1,7 +1,7 @@
 /*
- * copy-file.c
+ * test.c
  *
- * usage: ./copy-file source-file destination-file
+ * usage: ./test source-file destination-file
  */
 
 #include "myio.h"
