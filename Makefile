@@ -1,12 +1,12 @@
-test: test.c
-	gcc -Wall -g -pedantic -o test test.c myio.c
-	
-.PHONY: clean out-file
+CFLAGS=-Wall -g -pedantic
 
-out-file:
-	rm -rf out-file5
-	touch out-file5
-	chmod 777 out-file5
-	
+copy-test: copy-test.c myio.c
+	gcc $(CFLAG) -o copy-test copy-test.c myio.c
+
+rw-test: rw-test.c myio.c
+	gcc $(CFLAGS) -o rw-test rw-test.c myio.c
+
+.PHONY: clean
 clean:
-	rm -rf test
+	rm -rf copy-test
+	rm -rf rw-test

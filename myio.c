@@ -1,249 +1,195 @@
- /*
-  * myio.c
-  * Trey Oehmler
-  * CS315 Assignment 2 Fall 2018
-  * 
-  */
+/* 
+ * myio.c
+ * Trey Oehmler
+ * CS315 Assignment 2 Fall 2018
+ */
 
 #include "myio.h"
+#include <fcntl.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <sys/types.h>
+#include <sys/uio.h>
+#include <string.h>
 
-struct myfile *myopen(const char *path, int flags)
+struct tfile *myopen(const char *path, int flags)
 {
-	/* calls open() and initalizes a new myfile struct 
-	 * returns NULL on error, ptr to struct otherwise */
-	struct myfile *ret_file = malloc(sizeof(struct myfile));
+    /* initalizes new tfile
+     * returns ptr to tfile, or NULL on err */
+    int fd = open(path, flags, 0666);
+    if (fd == -1) {
+        return NULL;
+    }
 
-	if (!ret_file) 
-	{
-		perror("malloc");
-		return NULL; // malloc error
-	}
+    struct tfile *ret_file = malloc(sizeof(struct tfile));
+    if (!ret_file) {
+        return NULL; // malloc(2) error
+    }
 
-	// initalize new file
-	ret_file->fd = open(path, flags, 0666);
-	ret_file->rdwr = 0;
-	ret_file->rend = 0;
-	ret_file->offset = 0;
-	ret_file->r_off = 0;
-	ret_file->rcount = 0;
-	ret_file->wcount = 0;
+    ret_file->fd = fd;
+    ret_file->rw_flag = 0;
+    ret_file->file_off = 0;
+    ret_file->rd_off = 0;
+    ret_file->rd_count = 0;
+    ret_file->wr_count = 0;
 
-	if (ret_file->fd == -1) 
-	{
-		perror("open");
-		return NULL;
-	}
-
-	return ret_file;
+    return ret_file;
 }
 
-ssize_t myread(struct myfile *file, void *usrbuf, size_t count)
+off_t myseek(struct tfile *file, off_t offset, int whence) 
 {
-	/* copies 'count' bytes from rbuf of file to usrbuf
-	 * calls read() if not enough bytes in rbuf
-	 * returns -1 on err, 0 for EOF, and bytes read otherwise */
-	
-	if (file->rdwr == 2)
-	{
-		myflush(file);
-	}
+    /* repositions file offset by calling lseek(2)
+     * absolute or relative dependent on whence 
+     * rets new offset or -1 on error */
+    off_t new_off;
 
-	file->rdwr = 1;
+    if (file->rw_flag == 2) {
+        myflush(file);
+    } 
+    if (whence == SEEK_SET) {
+        new_off = lseek(file->fd, offset, SEEK_SET);
+    } else { // whence == SEEK_CUR
+        new_off = lseek(file->fd, (offset + file->file_off), SEEK_SET);
+    }
+    if (new_off != -1) {
+        file->file_off = new_off;
+        file->rd_count = 0;
+        file->rd_off = 0;
+        file->rw_flag = 0;
+    }
 
-	if (!count || file->rend)
-	{
-		return 0; // end of file or 0 bytes requested
-	}
+    return new_off;
+}
 
-	char *r_ptr = file->rbuf;
-	size_t r_off = file->r_off;
+ssize_t myflush(struct tfile *file)
+{
+    /* write any data in wbuf to file 
+     * rets number of bytes written or -1 on err */
+    if (file->wr_count == 0) {
+        return 0;
+    }
+    ssize_t bytes_wr = write(file->fd, file->wbuf, file->wr_count);
+    if (bytes_wr != -1) {
+        file->file_off += bytes_wr;
+        file->wr_count = 0;
+    }
+    return bytes_wr;
+}
 
-	if (count <= (file->rcount - r_off)) // enough bytes in rbuf
-	{
-		memcpy(usrbuf, r_ptr + r_off, count);
-		file->offset += count;
-		file->r_off += count;
-		return count;
-	}
+ssize_t myread(struct tfile *file, void *outbuf, size_t count) 
+{
+    /* calls read() to fill rbuf of file
+     * copies data to outbuf
+     * returns number of bytes copied to outbuf */
+    ssize_t bytes_rd;
 
-	ssize_t ret_bytes = 0;
-	if ((file->rcount - r_off) > 0) // copy remaining bytes from rbuf 
-	{
-		ret_bytes += file->rcount - r_off;
-		memcpy(usrbuf, r_ptr + r_off, ret_bytes);
-		file->offset += ret_bytes;
-		file->r_off = file->rcount;
-		count -= ret_bytes;
-	}
+    if (file->rw_flag == 2) {
+        myflush(file);
+    }
+    file->rw_flag = 1; 
+    
+    int increment;    
+    if (count <= file->rd_count) {
+        // copy to usrbuf from rbuf
+        memcpy(outbuf, (char *)file->rbuf + file->rd_off, count);
+        increment = count;
+    } else if (count <= BUFFER_SIZE) {
+        // move rem bytes to start of rbuf
+        memmove(file->rbuf, (char *)file->rbuf + file->rd_off, file->rd_count);
+        file->rd_off = 0;
+        // call read(2) to fill rbuf
+        size_t rd_req = BUFFER_SIZE - file->rd_count;
+        bytes_rd = read(file->fd, (char *)file->rbuf + file->rd_count, rd_req);
+        if (bytes_rd == -1) {
+            return -1;
+        }
+        // copy to usrbuf from rbuf
+        file->rd_count += bytes_rd;
+        if (count > file->rd_count) {
+            memcpy(outbuf, file->rbuf, file->rd_count);
+            increment = file->rd_count;
+        } else { 
+            memcpy(outbuf, file->rbuf, count);
+            increment = count;
+        }
+    } else { // count > BUFFER_SIZE
+        // call lseek(2) to reposition offset 
+        lseek(file->fd, file->file_off, SEEK_SET);
+        // call read(2) to fill usrbuf w count bytes
+        bytes_rd = read(file->fd, outbuf, count);
+        if (bytes_rd == -1) {
+            return -1;
+        } 
+        // update offs / count for special case
+        file->file_off += bytes_rd;
+        file->rd_count = 0;
+        file->rd_off = 0;
+        return bytes_rd;
+    }
+    // update file_off, rd_off, rd_count
+    file->file_off += increment;
+    file->rd_count -= increment;
+    file->rd_off += increment;
+    return (ssize_t)increment;
+}
 
-	// call read and copy from rbuf until sufficent count or EOF
-	while (count > 0 && !file->rend)
-	{
-		ssize_t bytes_read = read(file->fd, r_ptr, BUFFER_SIZE);
-		if (bytes_read < 0)
-		{
-			perror("read");
-			return -1;
-		}
-		else if (bytes_read == 0) // EOF reached
-		{
-			file->rend = 1;
-			file->r_off = 0;
-			file->rcount = 0;
-		}
-		else 
-		{
-			file->rcount = bytes_read;
-			file->r_off = 0;
-			if (file->rcount > count) 
-			{
-				memcpy((char *)usrbuf + ret_bytes, r_ptr, count);
-				ret_bytes += count;
-				file->offset += count;
-				file->r_off += count;
-				count = 0;
-			}
-			else
-			{
-				memcpy((char *)usrbuf + ret_bytes, r_ptr, file->rcount);
-				ret_bytes += file->rcount;
-				file->offset += file->rcount;
-				file->r_off += file->rcount;
-				count -= file->rcount;
-			}
-		}
-	}
+ssize_t mywrite(struct tfile *file, void *inbuf, size_t count)
+{
+    /* copies from inbuf to wbuf of file
+     * write to file when neccesary
+     * rets bytes written or -1 on error */
+    ssize_t bytes_wr;
 
-	return ret_bytes;
+    if (file->rw_flag == 1) {
+        lseek(file->fd, file->file_off, SEEK_SET);
+        file->rd_count = 0;
+        file->rd_off = 0;
+    } 
+
+    file->rw_flag = 2;
+
+    if ((count + file->wr_count) > BUFFER_SIZE) {
+        // write any remaining data in wbuf to file
+        if (file->wr_count > 0) {
+            bytes_wr = write(file->fd, file->wbuf, file->wr_count);
+            if (bytes_wr == -1) {
+                return -1; // write(2) error
+            } 
+            file->file_off += bytes_wr;
+            file->wr_count = 0;
+        }
+    }
+
+    // perform syscall directly for overflow count
+    if (count > BUFFER_SIZE) {
+        bytes_wr = write(file->fd, inbuf, count);
+        if (bytes_wr == -1) {
+            return -1; // write(2) error
+        }
+        file->file_off += bytes_wr;
+        return bytes_wr;
+    } 
+
+    char *wr_start = (char *)file->wbuf + file->wr_count;
+    memcpy(wr_start, inbuf, count);
+    file->wr_count += count;
+    return count;
+}
+
+int myclose(struct tfile *file) 
+{
+    /* flushes any remaining data in wbuf
+     * closes a file by calling close(2) 
+     * returns 0 on successful close, -1 otherwise */
+    myflush(file);
+    int ret = close(file->fd);
+    if (ret < 0) {
+        return -1;
+    } else {
+        free(file);
+        return 0;
+    }
 }
 
 
-ssize_t mywrite(struct myfile *file, void *usrbuf, size_t count)
-{
-	/* copies 'count' bytes from usrbuf to wbuf of file
-	 * writes to file once wbuf is full
-	 * returns -1 on err, number of bytes written otherwise */
-
-	if (file->rdwr == 1)
-	{
-		lseek(file->fd, (off_t) file->offset, SEEK_SET);
-	}
-	file->rdwr = 2;
-
-	char *w_ptr = file->wbuf;
-
-	if (!count)
-	{
-		return 0;
-	}
-
-	if ((file->wcount + count) <= BUFFER_SIZE) // enough space in wbuf
-	{
-		memcpy(w_ptr + file->wcount, usrbuf, count);
-		file->wcount += count;
-		return count;
-	}
-
-	ssize_t ret_bytes = (BUFFER_SIZE - file->wcount);
-	if (ret_bytes > 0) // copy into remaining wbuf space
-	{
-		memcpy(w_ptr + file->wcount, usrbuf, ret_bytes);
-		count -= ret_bytes;
-		file->wcount += ret_bytes;
-	}
-	
-	
-	while (count > 0)
-	/* clear wbuf by calling write()
-	 * copy remaining bytes from usrbuf into wbuf */
-	{
-		ssize_t written_bytes = write(file->fd, w_ptr, BUFFER_SIZE);
-		file->offset += BUFFER_SIZE;
-		file->wcount = 0;
-
-		if (written_bytes < 0) // check for write() err
-		{
-			perror("write");
-			return -1;
-		}
-	
-		if (count > BUFFER_SIZE)
-		{
-			written_bytes = BUFFER_SIZE;
-			count -= written_bytes;
-		}
-		else
-		{
-			written_bytes = count;
-			count = 0;
-		}
-		
-		memcpy(w_ptr, (char *)usrbuf + ret_bytes, count);
-		ret_bytes += written_bytes;
-		file->wcount += written_bytes;
-	}
-
-	return ret_bytes;
-}
-
-int myclose(struct myfile *file)
-{
-	/* clears wbuf of file by calling myflush
-	 * frees memory assoc w file
-	 * returns -1 on error, 0 on success */
-
-	myflush(file); 
-	int ret_val = close(file->fd);
-	if (ret_val < 0) 
-	{
-		perror("close");
-		return -1;
-	}
-	free(file);
-	return 0;
-}
-
-off_t myseek(struct myfile *file, off_t offset, int whence)
-{
-	/* changes file offset based on 'whence' 
-	 * SEEK_SET: absolute, SEEK_CUT: relative
-	 * clears neccesary fields for file & calls lseek() */
-
-	myflush(file);
-
-	if (whence == SEEK_SET)
-	{
-		file->offset = offset;
-	}
-	else if (whence == SEEK_CUR)
-	{
-		file->offset += offset;
-	}
-
-	file->rcount = 0;
-	file->rdwr = 0;
-	file->rend = 0;
-	file->r_off = 0;
-	file->wcount = 0;
-	
-	return lseek(file->fd, (off_t) file->offset, SEEK_SET);
-}
-
-void myflush(struct myfile *file)
-{
-	/* clears wbuf by calling write()
-	 * updates offset and wcount of accordingly */
-
-	if (file->wcount > 0) // prevents write() to rdonly file
-	{
-		ssize_t written_bytes = write(file->fd, file->wbuf, file->wcount);
-		if (written_bytes < 0)
-		{
-			perror("write");
-			return;
-		}
-		file->offset += file->wcount;
-		file->wcount = 0;
-	}
-}
 
